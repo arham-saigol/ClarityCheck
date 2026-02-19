@@ -1,0 +1,29 @@
+{
+  "name": "claritycheck",
+  "version": "0.1.0",
+  "description": "Lightweight decision assistant over Telegram with local/VPS runtime.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claritycheck": "./bin/claritycheck.ts"
+  },
+  "scripts": {
+    "claritycheck": "bun ./bin/claritycheck.ts",
+    "gateway": "bun ./src/gateway.ts",
+    "doctor": "bun ./bin/claritycheck.ts doctor",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^0.2.16",
+    "ai": "^6.0.0-beta.39",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.22",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
+
