@@ -96,6 +96,8 @@ const FollowupActionSchema = z.object({
   reason: z.string().min(1),
 });
 
+type DecisionSummary = z.infer<typeof SummarySchema>;
+
 function toModelMessages(rows: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
   return rows
     .filter((row) => row.role === "user" || row.role === "assistant")
@@ -167,11 +169,156 @@ function completionPrompt(messages: Array<{ role: string; content: string }>, ou
   return `
 Summarize this completed decision conversation into structured fields.
 Focus on concrete constraints, options evaluated, recommendation, and rationale.
+Return ONLY valid json. Do not use markdown or extra text.
+Required json keys:
+- title (string)
+- userGoal (string)
+- constraints (string[])
+- optionsConsidered ({option, pros, cons}[])
+- recommendedOption (string)
+- rationale (string)
+- confidence ("low" | "medium" | "high")
 ${outcomeLine}
 
 Transcript:
 ${transcript}
 `;
+}
+
+function getFallbackGoal(messages: Array<{ role: string; content: string }>): string {
+  const firstUser = messages.find((item) => item.role === "user")?.content?.trim();
+  if (firstUser && firstUser.length > 1) {
+    return firstUser.slice(0, 180);
+  }
+  return "Decision support";
+}
+
+function toStringArray(value: unknown, max = 12): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const output: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed) {
+      continue;
+    }
+    output.push(trimmed);
+    if (output.length >= max) {
+      break;
+    }
+  }
+  return output;
+}
+
+function toOptions(value: unknown): Array<{ option: string; pros: string[]; cons: string[] }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const output: Array<{ option: string; pros: string[]; cons: string[] }> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const row = item as Record<string, unknown>;
+    const option = typeof row.option === "string" ? row.option.trim() : "";
+    if (!option) {
+      continue;
+    }
+    output.push({
+      option,
+      pros: toStringArray(row.pros, 8),
+      cons: toStringArray(row.cons, 8),
+    });
+    if (output.length >= 8) {
+      break;
+    }
+  }
+  return output;
+}
+
+function extractJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // continue
+  }
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {
+      // continue
+    }
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      // continue
+    }
+  }
+
+  return undefined;
+}
+
+function coerceSummaryObject(
+  input: unknown,
+  messages: Array<{ role: string; content: string }>,
+  outcomeNote?: string,
+): DecisionSummary {
+  const row = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const fallbackGoal = getFallbackGoal(messages);
+  const fallbackTitle = fallbackGoal.slice(0, 80);
+  const rawConfidence = typeof row.confidence === "string" ? row.confidence.toLowerCase() : "medium";
+  const confidence: "low" | "medium" | "high" =
+    rawConfidence === "low" || rawConfidence === "high" || rawConfidence === "medium"
+      ? rawConfidence
+      : "medium";
+
+  return SummarySchema.parse({
+    title:
+      (typeof row.title === "string" && row.title.trim().length > 0 ? row.title.trim() : undefined) ??
+      fallbackTitle,
+    userGoal:
+      (typeof row.userGoal === "string" && row.userGoal.trim().length > 0
+        ? row.userGoal.trim()
+        : undefined) ??
+      (typeof row.goal === "string" && row.goal.trim().length > 0 ? row.goal.trim() : undefined) ??
+      fallbackGoal,
+    constraints: toStringArray(row.constraints, 12),
+    optionsConsidered: toOptions(row.optionsConsidered ?? row.options),
+    recommendedOption:
+      (typeof row.recommendedOption === "string" && row.recommendedOption.trim().length > 0
+        ? row.recommendedOption.trim()
+        : undefined) ??
+      (typeof row.recommendation === "string" && row.recommendation.trim().length > 0
+        ? row.recommendation.trim()
+        : undefined) ??
+      "No single recommendation selected",
+    rationale:
+      (typeof row.rationale === "string" && row.rationale.trim().length > 0
+        ? row.rationale.trim()
+        : undefined) ??
+      (typeof row.reasoning === "string" && row.reasoning.trim().length > 0
+        ? row.reasoning.trim()
+        : undefined) ??
+      outcomeNote?.trim() ??
+      "Summary generated from the available conversation context.",
+    confidence,
+  });
 }
 
 export async function completeDecision(
@@ -181,16 +328,37 @@ export async function completeDecision(
 ): Promise<{ providerUsed: ProviderName; record: DecisionRecord }> {
   const messages = toModelMessages(ctx.db.getMessages(decisionId, 120));
   const sources = ctx.db.getSources(decisionId);
+  const prompt = completionPrompt(messages, outcomeNote);
 
-  const summaryResult = await runWithProviderFallback(ctx.config, ctx.secrets, async ({ model }) => {
-    const response = await generateObject({
-      model: model as never,
-      schema: SummarySchema,
-      prompt: completionPrompt(messages, outcomeNote),
-      temperature: 0.1,
+  let summaryResult: RunWithFallbackResult<DecisionSummary>;
+  try {
+    summaryResult = await runWithProviderFallback(ctx.config, ctx.secrets, async ({ model }) => {
+      const response = await generateObject({
+        model: model as never,
+        schema: SummarySchema,
+        prompt,
+        temperature: 0.1,
+      });
+      return response.object;
     });
-    return response.object;
-  });
+  } catch {
+    try {
+      summaryResult = await runWithProviderFallback(ctx.config, ctx.secrets, async ({ model }) => {
+        const response = await generateText({
+          model: model as never,
+          temperature: 0.1,
+          prompt: `${prompt}\nReturn only json.`,
+        });
+        const parsed = extractJsonObject(response.text);
+        return coerceSummaryObject(parsed, messages, outcomeNote);
+      });
+    } catch {
+      summaryResult = {
+        providerUsed: ctx.config.activeProvider,
+        result: coerceSummaryObject(undefined, messages, outcomeNote),
+      };
+    }
+  }
 
   const record: DecisionRecord = {
     id: decisionId,
@@ -230,6 +398,7 @@ ${SYSTEM_PROMPT}
 You are in INTAKE stage.
 Your job is to gather complete context before any recommendation.
 Never provide a recommendation now.
+Return only json.
 
 Current intake state (may be incomplete):
 ${JSON.stringify(runtime.intake, null, 2)}
@@ -328,9 +497,10 @@ async function buildResearchQueries(
         model: model as never,
         schema: QueryPlanSchema,
         temperature: 0.1,
-        prompt: `
+      prompt: `
 Generate focused web research queries for a decision.
 Return 3-6 concise, non-overlapping search queries.
+Return only json.
 
 Intake:
 ${JSON.stringify(intake, null, 2)}
@@ -564,6 +734,7 @@ Rules:
 - Use fresh evidence and cite source tags like [S1], [S2] in responseText.
 - If recommendation changes versus prior recommendation, include a line that starts with "What changed:".
 - Keep the recommendation actionable and specific.
+Return only json.
 
 Prior recommendation:
 ${runtime.recommendation ? JSON.stringify(runtime.recommendation, null, 2) : "none"}
@@ -631,6 +802,7 @@ async function classifyRecommendationFollowup(
 Classify the latest user message.
 Return "reresearch" if user introduces new constraints, asks for newer data, questions assumptions, or asks to reconsider options.
 Return "clarify_existing" only if user is asking for explanation or minor clarification without changing the decision basis.
+Return only json.
 
 Latest user message:
 ${latestUserMessage(history)}
