@@ -6,6 +6,7 @@ ClarityCheck is a lightweight, single-user AI decision assistant you self-host a
 - A local/VPS gateway you control (`claritycheck gateway start|stop|status|logs`)
 - A guided terminal setup (`claritycheck onboard`)
 - Telegram commands to manage decisions (`/newdecision`, `/completedecision`, `/model ...`)
+- Telegram typing indicator while the agent is processing
 - Optional voice messages (Deepgram STT/TTS + `ffmpeg`)
 
 ## Quick Start (5 minutes)
@@ -16,7 +17,7 @@ Install Bun for your OS: https://bun.sh
 ### 2) Clone and install deps
 ```bash
 git clone https://github.com/arham-saigol/ClarityCheck
-cd claritycheck
+cd ClarityCheck
 bun install
 ```
 

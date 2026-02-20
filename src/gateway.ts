@@ -229,7 +229,8 @@ class GatewayApp {
   }
 
   private async handleVoiceMessage(chatId: number, fileId: string, mimeType: string): Promise<void> {
-    if (!this.secrets.deepgramApiKey) {
+    const deepgramApiKey = this.secrets.deepgramApiKey;
+    if (!deepgramApiKey) {
       await this.telegram.sendMessage(
         chatId,
         "Voice input is not available yet. Add Deepgram API key via claritycheck onboard.",
@@ -243,11 +244,13 @@ class GatewayApp {
         throw new Error("Telegram did not return a file path for voice note.");
       }
       const audio = await this.telegram.downloadFile(file.file_path);
-      const stt = await transcribeAudioWithDeepgram(audio, {
-        apiKey: this.secrets.deepgramApiKey,
-        model: this.config.voice.sttModel,
-        mimeType,
-      });
+      const stt = await this.runWithTypingIndicator(chatId, async () =>
+        transcribeAudioWithDeepgram(audio, {
+          apiKey: deepgramApiKey,
+          model: this.config.voice.sttModel,
+          mimeType,
+        }),
+      );
       await this.telegram.sendMessage(chatId, `Transcribed: ${stt.transcript}`);
       await this.handleUserMessage(chatId, stt.transcript, "voice");
     } catch (error) {
@@ -276,11 +279,16 @@ class GatewayApp {
 
     this.db.addMessage(decisionId, "user", text);
     try {
-      const result = await runDecisionTurn({
-        db: this.db,
-        config: this.config,
-        secrets: this.secrets,
-      }, decisionId);
+      const result = await this.runWithTypingIndicator(chatId, async () =>
+        runDecisionTurn(
+          {
+            db: this.db,
+            config: this.config,
+            secrets: this.secrets,
+          },
+          decisionId,
+        ),
+      );
       const replyText = `${result.text}\n\n(Provider: ${result.providerUsed})`;
       await this.telegram.sendMessage(chatId, replyText);
       await this.maybeSendVoiceReply(chatId, result.text, inputType);
@@ -290,6 +298,27 @@ class GatewayApp {
         `I hit an error while processing that turn: ${(error as Error).message}`,
       );
       logLine(this.logFile, "ERROR", `Turn error: ${(error as Error).stack ?? (error as Error).message}`);
+    }
+  }
+
+  private async runWithTypingIndicator<T>(chatId: number, runner: () => Promise<T>): Promise<T> {
+    const pulse = async () => {
+      try {
+        await this.telegram.sendChatAction(chatId, "typing");
+      } catch {
+        // typing indicator is non-critical
+      }
+    };
+
+    await pulse();
+    const interval = setInterval(() => {
+      void pulse();
+    }, 4_000);
+
+    try {
+      return await runner();
+    } finally {
+      clearInterval(interval);
     }
   }
 
@@ -508,13 +537,15 @@ class GatewayApp {
         return;
       }
       try {
-        const completion = await completeDecision(
-          {
-            db: this.db,
-            config: this.config,
-            secrets: this.secrets,
-          },
-          decisionId,
+        const completion = await this.runWithTypingIndicator(chatId, async () =>
+          completeDecision(
+            {
+              db: this.db,
+              config: this.config,
+              secrets: this.secrets,
+            },
+            decisionId,
+          ),
         );
         const lines = [
           "Decision completed and saved.",

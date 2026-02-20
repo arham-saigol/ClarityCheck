@@ -35,6 +35,19 @@ export interface TelegramCommand {
   description: string;
 }
 
+export type TelegramChatAction =
+  | "typing"
+  | "upload_photo"
+  | "record_video"
+  | "upload_video"
+  | "record_voice"
+  | "upload_voice"
+  | "upload_document"
+  | "choose_sticker"
+  | "find_location"
+  | "record_video_note"
+  | "upload_video_note";
+
 export class TelegramClient {
   private readonly baseUrl: string;
   private readonly fileBaseUrl: string;
@@ -42,6 +55,53 @@ export class TelegramClient {
   constructor(private readonly token: string) {
     this.baseUrl = `https://api.telegram.org/bot${token}`;
     this.fileBaseUrl = `https://api.telegram.org/file/bot${token}`;
+  }
+
+  private escapeHtml(input: string): string {
+    return input
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  }
+
+  private formatMarkdownLikeToTelegramHtml(input: string): string {
+    const codeFencePattern = /```([\s\S]*?)```/g;
+    const segments: Array<{ type: "text" | "code"; content: string }> = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = codeFencePattern.exec(input)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push({ type: "text", content: input.slice(lastIndex, match.index) });
+      }
+      segments.push({ type: "code", content: match[1] ?? "" });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < input.length) {
+      segments.push({ type: "text", content: input.slice(lastIndex) });
+    }
+    if (segments.length === 0) {
+      segments.push({ type: "text", content: input });
+    }
+
+    const transformed = segments
+      .map((segment) => {
+        if (segment.type === "code") {
+          const escapedCode = this.escapeHtml(segment.content.trim());
+          return `<pre><code>${escapedCode}</code></pre>`;
+        }
+
+        let text = this.escapeHtml(segment.content);
+        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>');
+        text = text.replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>");
+        text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+        text = text.replace(/__(.+?)__/g, "<b>$1</b>");
+        text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+        return text;
+      })
+      .join("");
+
+    return transformed;
   }
 
   async getUpdates(offset?: number, timeoutSeconds = 25): Promise<TelegramUpdate[]> {
@@ -70,7 +130,23 @@ export class TelegramClient {
   }
 
   async sendMessage(chatId: number, text: string): Promise<void> {
+    const htmlText = this.formatMarkdownLikeToTelegramHtml(text);
     const response = await fetch(`${this.baseUrl}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: htmlText,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.ok) {
+      return;
+    }
+
+    const fallbackResponse = await fetch(`${this.baseUrl}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -80,8 +156,23 @@ export class TelegramClient {
       }),
       signal: AbortSignal.timeout(15_000),
     });
+    if (!fallbackResponse.ok) {
+      throw new Error(`Telegram sendMessage failed: ${String(fallbackResponse.status)}`);
+    }
+  }
+
+  async sendChatAction(chatId: number, action: TelegramChatAction): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/sendChatAction`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        action,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!response.ok) {
-      throw new Error(`Telegram sendMessage failed: ${String(response.status)}`);
+      throw new Error(`Telegram sendChatAction failed: ${String(response.status)}`);
     }
   }
 
