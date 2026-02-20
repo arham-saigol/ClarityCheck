@@ -23,6 +23,17 @@ import {
 import { convertWavToOggOpus, isFfmpegInstalled } from "./voice/ffmpeg";
 import { shouldSendVoiceReply, type UserInputType } from "./voice/policy";
 
+const TELEGRAM_COMMANDS = [
+  { command: "start", description: "Show pairing and quick help" },
+  { command: "newdecision", description: "Start a fresh decision thread" },
+  { command: "completedecision", description: "Finalize active decision" },
+  { command: "model", description: "Switch model provider" },
+  { command: "voice", description: "Set voice mode: on/off/auto" },
+  { command: "status", description: "Show current bot status" },
+  { command: "help", description: "List available commands" },
+  { command: "pair", description: "Pair this chat with gateway" },
+];
+
 interface PendingPair {
   chatId: number;
   expiresAt: number;
@@ -77,8 +88,18 @@ class GatewayApp {
       `Startup Telegram pair code ${this.startupPairCode} expires ${new Date(this.startupPairCodeExpiresAt).toISOString()}`,
     );
 
+    await this.registerTelegramCommands();
     this.startControlServer();
     await this.pollLoop();
+  }
+
+  private async registerTelegramCommands(): Promise<void> {
+    try {
+      await this.telegram.setMyCommands(TELEGRAM_COMMANDS);
+      logLine(this.logFile, "INFO", "Telegram command menu registered.");
+    } catch (error) {
+      logLine(this.logFile, "WARN", `Failed to register Telegram commands: ${(error as Error).message}`);
+    }
   }
 
   shutdown(): void {

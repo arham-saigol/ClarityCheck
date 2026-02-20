@@ -30,6 +30,11 @@ export interface TelegramUpdate {
   message?: TelegramMessage;
 }
 
+export interface TelegramCommand {
+  command: string;
+  description: string;
+}
+
 export class TelegramClient {
   private readonly baseUrl: string;
   private readonly fileBaseUrl: string;
@@ -77,6 +82,22 @@ export class TelegramClient {
     });
     if (!response.ok) {
       throw new Error(`Telegram sendMessage failed: ${String(response.status)}`);
+    }
+  }
+
+  async setMyCommands(commands: TelegramCommand[]): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/setMyCommands`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ commands }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw new Error(`Telegram setMyCommands failed: ${String(response.status)}`);
+    }
+    const payload = (await response.json()) as { ok: boolean; description?: string };
+    if (!payload.ok) {
+      throw new Error(payload.description ?? "Telegram setMyCommands failed");
     }
   }
 

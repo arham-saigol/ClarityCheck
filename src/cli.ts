@@ -12,7 +12,7 @@ import { tailLog } from "./logger";
 import { ensureConfigDir, getAppPaths } from "./paths";
 import { ask, toYesNo } from "./prompt";
 import type { AppConfig, AppSecrets, ProviderName, SearchProviderName, VoiceReplyMode } from "./types";
-import { isFfmpegInstalled } from "./voice/ffmpeg";
+import { installFfmpegAuto, isFfmpegInstalled } from "./voice/ffmpeg";
 
 function printHelp(): void {
   console.log(`
@@ -77,9 +77,19 @@ async function onboard(paths: ReturnType<typeof getAppPaths>): Promise<void> {
 
   console.log("[4/5] Voice");
   const deepgramKey = await ask("Deepgram API key for STT/TTS (optional)", { allowEmpty: true });
-  const ffmpegAvailable = isFfmpegInstalled();
+  let ffmpegAvailable = isFfmpegInstalled();
   if (deepgramKey && !ffmpegAvailable) {
-    console.log("  ! ffmpeg not found (voice replies will be disabled until installed)");
+    console.log("  ! ffmpeg not found. Attempting automatic install...");
+    const install = installFfmpegAuto();
+    if (install.installed) {
+      ffmpegAvailable = true;
+      console.log(`  - ffmpeg install completed (${install.method})`);
+    } else {
+      console.log("  ! auto-install failed; voice replies will be disabled until ffmpeg is installed");
+      if (install.errors.length > 0) {
+        console.log(`  ! installer detail: ${install.errors[0]}`);
+      }
+    }
   } else if (deepgramKey && ffmpegAvailable) {
     console.log("  - deepgram + ffmpeg ready");
   } else {
@@ -204,7 +214,20 @@ async function gatewayStart(paths: ReturnType<typeof getAppPaths>): Promise<void
     throw new Error("Onboarding incomplete. Run 'claritycheck onboard' first.");
   }
 
-  loadSecrets(paths);
+  const secrets = loadSecrets(paths);
+  if (secrets.deepgramApiKey && !isFfmpegInstalled()) {
+    console.log("ffmpeg is missing. Attempting automatic install...");
+    const install = installFfmpegAuto();
+    if (install.installed) {
+      console.log(`ffmpeg install completed (${install.method}).`);
+    } else {
+      console.log("Auto-install could not install ffmpeg.");
+      console.log("Voice replies remain disabled until ffmpeg is installed.");
+      if (install.errors.length > 0) {
+        console.log(`Installer details: ${install.errors[0]}`);
+      }
+    }
+  }
   const started = await startGatewayProcess(paths, {
     CLARITYCHECK_CONFIG_DIR: paths.configDir,
   });

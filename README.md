@@ -97,7 +97,7 @@ ClarityCheck stores local state in your OS config directory:
 Run `claritycheck onboard` and confirm your Telegram token is provided.
 
 ### "Executable not found in $PATH: ffmpeg"
-Install `ffmpeg` and restart the gateway. Voice replies are optional; text still works.
+ClarityCheck attempts to auto-install `ffmpeg` during `claritycheck onboard` (when Deepgram is configured) and `claritycheck gateway start`. If auto-install fails, install manually and start again.
 
 ### Config directory issues
 Override the config dir:

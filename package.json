@@ -14,7 +14,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^0.2.16",
+    "@ai-sdk/openai-compatible": "^2.0.30",
     "ai": "^6.0.0-beta.39",
     "zod": "^3.25.76"
   },
