@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { DecisionRecord, Role } from "./types";
+import { createEmptyRuntimeState, normalizeRuntimeState } from "./decision-workflow";
+import type { DecisionRecord, DecisionRuntimeState, Role } from "./types";
 
 interface MessageRow {
   role: Role;
@@ -62,9 +63,19 @@ export class ClarityDb {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS decision_runtime (
+        decision_id TEXT PRIMARY KEY,
+        stage TEXT NOT NULL,
+        intake_json TEXT NOT NULL,
+        research_json TEXT NOT NULL,
+        recommendation_json TEXT,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_messages_decision_id ON messages(decision_id);
       CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
       CREATE INDEX IF NOT EXISTS idx_sources_decision_id ON sources(decision_id);
+      CREATE INDEX IF NOT EXISTS idx_decision_runtime_stage ON decision_runtime(stage);
     `);
   }
 
@@ -114,8 +125,130 @@ export class ClarityDb {
       `,
       )
       .run(id, title, userGoal, now);
+    const runtime = createEmptyRuntimeState(userGoal);
+    this.db
+      .query(
+        `
+          INSERT INTO decision_runtime(decision_id, stage, intake_json, research_json, recommendation_json, updated_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        `,
+      )
+      .run(
+        id,
+        runtime.stage,
+        JSON.stringify(runtime.intake),
+        JSON.stringify(runtime.research),
+        runtime.recommendation ? JSON.stringify(runtime.recommendation) : null,
+        now,
+      );
     this.setActiveDecisionId(id);
     return id;
+  }
+
+  private ensureDecisionRuntime(decisionId: string): void {
+    const existing = this.db
+      .query("SELECT decision_id FROM decision_runtime WHERE decision_id = ?1")
+      .get(decisionId) as { decision_id?: string } | null;
+    if (existing?.decision_id) {
+      return;
+    }
+
+    const decision = this.db
+      .query("SELECT user_goal FROM decisions WHERE id = ?1")
+      .get(decisionId) as { user_goal?: string } | null;
+    const runtime = createEmptyRuntimeState(decision?.user_goal);
+    const now = new Date().toISOString();
+    this.db
+      .query(
+        `
+          INSERT INTO decision_runtime(decision_id, stage, intake_json, research_json, recommendation_json, updated_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        `,
+      )
+      .run(
+        decisionId,
+        runtime.stage,
+        JSON.stringify(runtime.intake),
+        JSON.stringify(runtime.research),
+        null,
+        now,
+      );
+  }
+
+  getDecisionRuntime(decisionId: string): DecisionRuntimeState {
+    this.ensureDecisionRuntime(decisionId);
+    const row = this.db
+      .query(
+        `
+          SELECT stage, intake_json, research_json, recommendation_json
+          FROM decision_runtime
+          WHERE decision_id = ?1
+        `,
+      )
+      .get(decisionId) as
+      | {
+          stage?: string;
+          intake_json?: string;
+          research_json?: string;
+          recommendation_json?: string | null;
+        }
+      | null;
+
+    if (!row) {
+      return createEmptyRuntimeState();
+    }
+
+    const intake = this.parseJson(row.intake_json, {}) as DecisionRuntimeState["intake"];
+    const research = this.parseJson(row.research_json, {}) as DecisionRuntimeState["research"];
+    const recommendation = row.recommendation_json
+      ? (this.parseJson(
+          row.recommendation_json,
+          undefined,
+        ) as DecisionRuntimeState["recommendation"] | undefined)
+      : undefined;
+
+    return normalizeRuntimeState({
+      stage: row.stage as DecisionRuntimeState["stage"],
+      intake,
+      research,
+      recommendation,
+    });
+  }
+
+  setDecisionRuntime(decisionId: string, runtime: DecisionRuntimeState): void {
+    this.ensureDecisionRuntime(decisionId);
+    const now = new Date().toISOString();
+    const normalized = normalizeRuntimeState(runtime);
+    this.db
+      .query(
+        `
+          UPDATE decision_runtime
+          SET stage = ?2,
+              intake_json = ?3,
+              research_json = ?4,
+              recommendation_json = ?5,
+              updated_at = ?6
+          WHERE decision_id = ?1
+        `,
+      )
+      .run(
+        decisionId,
+        normalized.stage,
+        JSON.stringify(normalized.intake),
+        JSON.stringify(normalized.research),
+        normalized.recommendation ? JSON.stringify(normalized.recommendation) : null,
+        now,
+      );
+  }
+
+  updateDecisionRuntime(
+    decisionId: string,
+    updater: (runtime: DecisionRuntimeState) => DecisionRuntimeState,
+  ): DecisionRuntimeState {
+    const current = this.getDecisionRuntime(decisionId);
+    const next = normalizeRuntimeState(updater(current), current.intake.goal);
+    this.setDecisionRuntime(decisionId, next);
+    return next;
   }
 
   addMessage(decisionId: string, role: Role, content: string): void {
@@ -164,6 +297,11 @@ export class ClarityDb {
         `,
       )
       .run(decisionId, now);
+
+    this.updateDecisionRuntime(decisionId, (runtime) => ({
+      ...runtime,
+      stage: "recommendation",
+    }));
 
     const searchBlob = [
       record.title,
@@ -299,5 +437,16 @@ export class ClarityDb {
       return undefined;
     }
     return JSON.parse(row.summary_json) as DecisionRecord;
+  }
+
+  private parseJson<T>(raw: string | undefined, fallback: T): T {
+    if (!raw) {
+      return fallback;
+    }
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
   }
 }

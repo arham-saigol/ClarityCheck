@@ -273,7 +273,7 @@ class GatewayApp {
       decisionId = this.db.createDecision(title || "Untitled decision", text);
       await this.telegram.sendMessage(
         chatId,
-        "Started a new decision thread. I will research and challenge assumptions when needed.",
+        "Started a new decision thread. I will ask focused questions first, then research before recommending.",
       );
     }
 

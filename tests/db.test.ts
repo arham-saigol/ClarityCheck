@@ -10,6 +10,26 @@ test("decision lifecycle and memory search", () => {
   const db = new ClarityDb(dbPath);
 
   const decisionId = db.createDecision("Laptop purchase", "Need a lightweight coding laptop");
+  const runtime = db.getDecisionRuntime(decisionId);
+  expect(runtime.stage).toBe("intake");
+  expect(runtime.intake.goal).toContain("lightweight");
+
+  db.updateDecisionRuntime(decisionId, (current) => ({
+    ...current,
+    stage: "research",
+    intake: {
+      ...current.intake,
+      optionsScope: "Framework 13 vs MacBook Air",
+      timeline: "this month",
+      riskTolerance: "medium",
+      successCriteria: "battery + Linux support",
+      constraints: [...current.intake.constraints, "under 1.5kg"],
+    },
+  }));
+  const updatedRuntime = db.getDecisionRuntime(decisionId);
+  expect(updatedRuntime.stage).toBe("research");
+  expect(updatedRuntime.intake.constraints.length).toBeGreaterThan(0);
+
   db.addMessage(decisionId, "user", "I need long battery life and Linux compatibility.");
   db.addMessage(decisionId, "assistant", "Let's compare options.");
   db.completeDecision(decisionId, {

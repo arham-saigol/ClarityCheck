@@ -5,6 +5,7 @@ export type SearchProviderName = "tavily" | "brave";
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export type VoiceReplyMode = "off" | "on" | "auto";
+export type DecisionStage = "intake" | "research" | "recommendation";
 
 export interface ProviderModels {
   cerebras: string;
@@ -73,6 +74,35 @@ export interface DecisionRecord {
   confidence: "low" | "medium" | "high";
   sources: Array<{ title: string; url: string; fetchedAt: string }>;
   outcomeNote?: string;
+}
+
+export interface DecisionIntakeState {
+  goal?: string;
+  optionsScope?: string;
+  constraints: string[];
+  timeline?: string;
+  riskTolerance?: string;
+  successCriteria?: string;
+  mustAvoid?: string;
+}
+
+export interface DecisionResearchState {
+  lastResearchAt?: string;
+  queries: string[];
+}
+
+export interface DecisionRecommendationState {
+  recommendedOption: string;
+  confidence: "low" | "medium" | "high";
+  rationale: string;
+  updatedAt: string;
+}
+
+export interface DecisionRuntimeState {
+  stage: DecisionStage;
+  intake: DecisionIntakeState;
+  research: DecisionResearchState;
+  recommendation?: DecisionRecommendationState;
 }
 
 export interface WebSearchResultItem {
